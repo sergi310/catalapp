@@ -7,8 +7,13 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
   <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
     #map {
-      height: 100vh;
+      height: 100%;
     }
     .vote-buttons button {
       margin: 2px;
@@ -21,8 +26,8 @@
       background: white;
       padding: 10px;
       font-size: 14px;
-      border-radius: 8px;
-      box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+      border-radius: 5px;
+      box-shadow: 0 0 5px rgba(0,0,0,0.3);
       z-index: 1000;
     }
     #zoom-warning {
@@ -30,11 +35,11 @@
       top: 10px;
       left: 50%;
       transform: translateX(-50%);
-      background: #ffc;
-      padding: 8px 12px;
-      border: 1px solid #cc9;
-      border-radius: 5px;
+      background: #ffdddd;
+      padding: 10px;
       font-size: 14px;
+      border: 1px solid #dd4444;
+      border-radius: 5px;
       display: none;
       z-index: 1000;
     }
@@ -42,33 +47,43 @@
       position: absolute;
       bottom: 10px;
       right: 10px;
-      padding: 10px 16px;
-      background: #4CAF50;
+      padding: 10px;
+      background: green;
       color: white;
       border: none;
-      border-radius: 6px;
-      font-size: 14px;
+      border-radius: 5px;
       display: none;
       z-index: 1000;
     }
   </style>
 </head>
 <body>
-  <div id="zoom-warning">Fes zoom (mínim nivell 13) per veure establiments</div>
   <div id="map"></div>
   <div id="legend">
-    <strong>Llegenda:</strong><br>
-    🟩 Verd: Parlen català<br>
-    🟨 Taronja: A vegades<br>
-    🟥 Vermell: No parlen català
+    <b>Llegenda:</b><br/>
+    🟩 Català sempre<br/>
+    🟨 A vegades<br/>
+    🟥 Mai
   </div>
+  <div id="zoom-warning">Fes zoom més a prop per veure els establiments</div>
   <button id="install-button">Instal·la l'app</button>
 
   <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@1.35.6/dist/umd/supabase.min.js"></script>
   <script>
-    const map = L.map('map').setView([41.3851, 2.1734], 8); // Catalunya
+    // Supabase config
+    const supabaseUrl = 'https://bwzpnsslanzyjnvhhxfc.supabase.co';
+    const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'; // la clau sencera aquí
+    const supabase = supabase.createClient(supabaseUrl, supabaseKey);
 
-    // Mostrar ubicació de l'usuari
+    const map = L.map('map').setView([41.3851, 2.1734], 8);
+    const establishments = {};
+    let userPlaceId = 0;
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
     map.locate({ setView: true, maxZoom: 15 });
     map.on('locationfound', function (e) {
       L.circleMarker(e.latlng, {
@@ -76,17 +91,15 @@
         color: 'blue',
         fillColor: '#30f',
         fillOpacity: 0.7
-      }).addTo(map).bindPopup("Ets aquí").openPopup();
+      })
+        .addTo(map)
+        .bindPopup("Ets aquí")
+        .openPopup();
     });
+
     map.on('locationerror', function () {
       alert("No s'ha pogut obtenir la teva ubicació.");
     });
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap contributors'
-    }).addTo(map);
-
-    const establishments = {};
 
     function getColorFromVotes(votes) {
       if (!votes || votes.length === 0) return 'gray';
@@ -96,128 +109,114 @@
       return 'red';
     }
 
-    function updateMarkers() {
-      Object.values(establishments).forEach(est => {
-        const newColor = getColorFromVotes(est.votes);
-        est.marker.setStyle({ color: newColor });
+    function average(votes) {
+      if (!votes || votes.length === 0) return 0;
+      return votes.reduce((a, b) => a + b, 0) / votes.length;
+    }
+
+    async function loadSharedPlaces() {
+      const { data, error } = await supabase.from('places').select('*');
+      if (error) {
+        console.error('Error carregant places:', error);
+        return;
+      }
+      data.forEach(place => {
+        const marker = L.circleMarker([place.lat, place.lon], {
+          radius: 6,
+          color: getColorFromVotes(place.votes),
+          fillOpacity: 0.8
+        }).addTo(map);
+
+        marker.bindPopup(generatePopup(place));
+
+        establishments[place.id] = {
+          ...place,
+          marker
+        };
       });
+    }
+
+    function generatePopup(place) {
+      return `
+        <b>${place.name}</b><br/>
+        <small>${place.votes.length} vot(s) — mitjana: ${average(place.votes).toFixed(1)}</small><br/>
+        <div class="vote-buttons">
+          <button onclick="vote('${place.id}', 2)">🟩 Sí</button>
+          <button onclick="vote('${place.id}', 1)">🟨 A vegades</button>
+          <button onclick="vote('${place.id}', 0)">🟥 Mai</button>
+        </div>
+      `;
+    }
+
+    async function saveSharedPlace(place) {
+      const { error } = await supabase.from('places').insert([place]);
+      if (error) console.error('Error desant place:', error);
+    }
+
+    async function updateVotes(id, votes) {
+      const { error } = await supabase.from('places').update({ votes }).eq('id', id);
+      if (error) console.error('Error actualitzant votacions:', error);
+    }
+
+    function addPlace(latlng, name) {
+      const id = 'user_' + (userPlaceId++);
+      const votes = [];
+      const place = { id, name, lat: latlng.lat, lon: latlng.lng, votes };
+      const marker = L.circleMarker(latlng, {
+        radius: 6,
+        color: getColorFromVotes(votes),
+        fillOpacity: 0.8
+      }).addTo(map);
+
+      marker.bindPopup(generatePopup(place));
+      place.marker = marker;
+      establishments[id] = place;
+      saveSharedPlace(place);
     }
 
     window.vote = function(id, value) {
       const est = establishments[id];
       est.votes.push(value);
-      localStorage.setItem(`votes_${id}`, JSON.stringify(est.votes));
-      updateMarkers();
-      alert('Gràcies pel teu vot!');
+      est.marker.setStyle({ color: getColorFromVotes(est.votes) });
+      est.marker.setPopupContent(generatePopup(est));
+      updateVotes(id, est.votes);
     }
 
-    function loadEstablishments(bounds) {
-      const overpassUrl = 'https://overpass-api.de/api/interpreter';
-      const query = `
-        [out:json][timeout:25];
-        (
-          node["shop"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
-          node["amenity"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
-        );
-        out;
-      `;
+    const zoomWarning = document.getElementById('zoom-warning');
+    map.on('zoomend', () => {
+      zoomWarning.style.display = map.getZoom() < 13 ? 'block' : 'none';
+    });
 
-      fetch(overpassUrl, {
-        method: 'POST',
-        body: new URLSearchParams({ data: query }),
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      })
-        .then(res => res.json())
-        .then(data => {
-          data.elements.forEach((el, i) => {
-            const id = el.id.toString();
-            if (establishments[id]) return;
-
-            const name = el.tags.name || `Lloc ${i+1}`;
-            const lat = el.lat;
-            const lon = el.lon;
-            const savedVotes = localStorage.getItem(`votes_${id}`);
-            const votes = savedVotes ? JSON.parse(savedVotes) : [];
-
-            const marker = L.circleMarker([lat, lon], {
-              radius: 6,
-              color: getColorFromVotes(votes),
-              fillOpacity: 0.8
-            }).addTo(map);
-
-            marker.bindPopup(`
-              <b>${name}</b><br/>
-              <div class="vote-buttons">
-                <button onclick="vote('${id}', 2)">🟩 Sí</button>
-                <button onclick="vote('${id}', 1)">🟨 A vegades</button>
-                <button onclick="vote('${id}', 0)">🟥 Mai</button>
-              </div>
-            `);
-
-            establishments[id] = {
-              id, name, lat, lon,
-              votes: votes,
-              marker: marker
-            };
-          });
-        });
-    }
-
-    let lastBounds = null;
-    function onMapMoveEnd() {
-      const bounds = map.getBounds();
-      const margin = 0.05;
-      const expanded = L.latLngBounds(
-        [bounds.getSouth() - margin, bounds.getWest() - margin],
-        [bounds.getNorth() + margin, bounds.getEast() + margin]
-      );
-
-      const zoomWarning = document.getElementById('zoom-warning');
-      if (map.getZoom() < 13) {
-        zoomWarning.style.display = 'block';
-        return;
-      } else {
-        zoomWarning.style.display = 'none';
-      }
-
-      if (!lastBounds || !lastBounds.contains(expanded)) {
-        lastBounds = expanded;
-        loadEstablishments(expanded);
-      }
-    }
-
-    map.on('moveend', onMapMoveEnd);
-    onMapMoveEnd();
-
-    // Instal·lació manual com a PWA
+    // Instal·lació PWA
     let deferredPrompt;
     const installButton = document.getElementById('install-button');
-
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       deferredPrompt = e;
       installButton.style.display = 'block';
-
-      installButton.addEventListener('click', () => {
-        installButton.style.display = 'none';
-        deferredPrompt.prompt();
-        deferredPrompt.userChoice.then(() => {
-          deferredPrompt = null;
-        });
-      });
     });
+
+    installButton.addEventListener('click', async () => {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const result = await deferredPrompt.userChoice;
+        if (result.outcome === 'accepted') {
+          console.log('PWA instal·lada');
+        }
+        deferredPrompt = null;
+        installButton.style.display = 'none';
+      }
+    });
+
+    loadSharedPlaces();
   </script>
 
-  <!-- Registre del service worker -->
   <script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('service-worker.js')
         .then(() => console.log('Service Worker registrat!'))
-        .catch(err => console.error('Error en registrar el Service Worker:', err));
+        .catch(err => console.error('Error al registrar el Service Worker:', err));
     }
   </script>
 </body>
 </html>
-
