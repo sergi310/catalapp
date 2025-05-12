@@ -4,10 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Mapa d'ús del català</title>
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
-  />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
   <style>
     #map {
       height: 100vh;
@@ -16,30 +14,70 @@
       margin: 2px;
       padding: 4px 8px;
     }
+    #legend {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: white;
+      padding: 10px;
+      font-size: 14px;
+      border-radius: 8px;
+      box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+      z-index: 1000;
+    }
+    #zoom-warning {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #ffc;
+      padding: 8px 12px;
+      border: 1px solid #cc9;
+      border-radius: 5px;
+      font-size: 14px;
+      display: none;
+      z-index: 1000;
+    }
+    #install-button {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      padding: 10px 16px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      display: none;
+      z-index: 1000;
+    }
   </style>
 </head>
 <body>
+  <div id="zoom-warning">Fes zoom (mínim nivell 13) per veure establiments</div>
   <div id="map"></div>
+  <div id="legend">
+    <strong>Llegenda:</strong><br>
+    🟩 Verd: Parlen català<br>
+    🟨 Taronja: A vegades<br>
+    🟥 Vermell: No parlen català
+  </div>
+  <button id="install-button">Instal·la l'app</button>
 
   <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
   <script>
     const map = L.map('map').setView([41.3851, 2.1734], 8); // Catalunya
 
-    // Afegim la ubicació de l'usuari
+    // Mostrar ubicació de l'usuari
     map.locate({ setView: true, maxZoom: 15 });
-
     map.on('locationfound', function (e) {
       L.circleMarker(e.latlng, {
         radius: 8,
         color: 'blue',
         fillColor: '#30f',
         fillOpacity: 0.7
-      })
-        .addTo(map)
-        .bindPopup("Ets aquí")
-        .openPopup();
+      }).addTo(map).bindPopup("Ets aquí").openPopup();
     });
-
     map.on('locationerror', function () {
       alert("No s'ha pogut obtenir la teva ubicació.");
     });
@@ -68,6 +106,7 @@
     window.vote = function(id, value) {
       const est = establishments[id];
       est.votes.push(value);
+      localStorage.setItem(`votes_${id}`, JSON.stringify(est.votes));
       updateMarkers();
       alert('Gràcies pel teu vot!');
     }
@@ -94,15 +133,17 @@
         .then(data => {
           data.elements.forEach((el, i) => {
             const id = el.id.toString();
-            if (establishments[id]) return; // evitar duplicats
+            if (establishments[id]) return;
 
             const name = el.tags.name || `Lloc ${i+1}`;
             const lat = el.lat;
             const lon = el.lon;
+            const savedVotes = localStorage.getItem(`votes_${id}`);
+            const votes = savedVotes ? JSON.parse(savedVotes) : [];
 
             const marker = L.circleMarker([lat, lon], {
               radius: 6,
-              color: 'gray',
+              color: getColorFromVotes(votes),
               fillOpacity: 0.8
             }).addTo(map);
 
@@ -117,7 +158,7 @@
 
             establishments[id] = {
               id, name, lat, lon,
-              votes: [],
+              votes: votes,
               marker: marker
             };
           });
@@ -133,15 +174,50 @@
         [bounds.getNorth() + margin, bounds.getEast() + margin]
       );
 
-      // NOMÉS carregar si el zoom és prou alt
-      if (map.getZoom() >= 13 && (!lastBounds || !lastBounds.contains(expanded))) {
+      const zoomWarning = document.getElementById('zoom-warning');
+      if (map.getZoom() < 13) {
+        zoomWarning.style.display = 'block';
+        return;
+      } else {
+        zoomWarning.style.display = 'none';
+      }
+
+      if (!lastBounds || !lastBounds.contains(expanded)) {
         lastBounds = expanded;
         loadEstablishments(expanded);
       }
     }
 
     map.on('moveend', onMapMoveEnd);
-    onMapMoveEnd(); // carregar inicialment si zoom >= 13
+    onMapMoveEnd();
+
+    // Instal·lació manual com a PWA
+    let deferredPrompt;
+    const installButton = document.getElementById('install-button');
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      installButton.style.display = 'block';
+
+      installButton.addEventListener('click', () => {
+        installButton.style.display = 'none';
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then(() => {
+          deferredPrompt = null;
+        });
+      });
+    });
+  </script>
+
+  <!-- Registre del service worker -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js')
+        .then(() => console.log('Service Worker registrat!'))
+        .catch(err => console.error('Error en registrar el Service Worker:', err));
+    }
   </script>
 </body>
 </html>
+
