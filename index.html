@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mapa d'ús del català</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
+  />
+  <style>
+    #map {
+      height: 100vh;
+    }
+    .vote-buttons button {
+      margin: 2px;
+      padding: 4px 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([41.3851, 2.1734], 8); // Catalunya
+
+    // Afegim la ubicació de l'usuari
+    map.locate({ setView: true, maxZoom: 15 });
+
+    map.on('locationfound', function (e) {
+      L.circleMarker(e.latlng, {
+        radius: 8,
+        color: 'blue',
+        fillColor: '#30f',
+        fillOpacity: 0.7
+      })
+        .addTo(map)
+        .bindPopup("Ets aquí")
+        .openPopup();
+    });
+
+    map.on('locationerror', function () {
+      alert("No s'ha pogut obtenir la teva ubicació.");
+    });
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const establishments = {};
+
+    function getColorFromVotes(votes) {
+      if (!votes || votes.length === 0) return 'gray';
+      const avg = votes.reduce((a, b) => a + b, 0) / votes.length;
+      if (avg >= 1.5) return 'green';
+      if (avg >= 0.6) return 'orange';
+      return 'red';
+    }
+
+    function updateMarkers() {
+      Object.values(establishments).forEach(est => {
+        const newColor = getColorFromVotes(est.votes);
+        est.marker.setStyle({ color: newColor });
+      });
+    }
+
+    window.vote = function(id, value) {
+      const est = establishments[id];
+      est.votes.push(value);
+      updateMarkers();
+      alert('Gràcies pel teu vot!');
+    }
+
+    function loadEstablishments(bounds) {
+      const overpassUrl = 'https://overpass-api.de/api/interpreter';
+      const query = `
+        [out:json][timeout:25];
+        (
+          node["shop"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
+          node["amenity"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
+        );
+        out;
+      `;
+
+      fetch(overpassUrl, {
+        method: 'POST',
+        body: new URLSearchParams({ data: query }),
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      })
+        .then(res => res.json())
+        .then(data => {
+          data.elements.forEach((el, i) => {
+            const id = el.id.toString();
+            if (establishments[id]) return; // evitar duplicats
+
+            const name = el.tags.name || `Lloc ${i+1}`;
+            const lat = el.lat;
+            const lon = el.lon;
+
+            const marker = L.circleMarker([lat, lon], {
+              radius: 6,
+              color: 'gray',
+              fillOpacity: 0.8
+            }).addTo(map);
+
+            marker.bindPopup(`
+              <b>${name}</b><br/>
+              <div class="vote-buttons">
+                <button onclick="vote('${id}', 2)">🟩 Sí</button>
+                <button onclick="vote('${id}', 1)">🟨 A vegades</button>
+                <button onclick="vote('${id}', 0)">🟥 Mai</button>
+              </div>
+            `);
+
+            establishments[id] = {
+              id, name, lat, lon,
+              votes: [],
+              marker: marker
+            };
+          });
+        });
+    }
+
+    let lastBounds = null;
+    function onMapMoveEnd() {
+      const bounds = map.getBounds();
+      const margin = 0.05;
+      const expanded = L.latLngBounds(
+        [bounds.getSouth() - margin, bounds.getWest() - margin],
+        [bounds.getNorth() + margin, bounds.getEast() + margin]
+      );
+
+      // NOMÉS carregar si el zoom és prou alt
+      if (map.getZoom() >= 13 && (!lastBounds || !lastBounds.contains(expanded))) {
+        lastBounds = expanded;
+        loadEstablishments(expanded);
+      }
+    }
+
+    map.on('moveend', onMapMoveEnd);
+    onMapMoveEnd(); // carregar inicialment si zoom >= 13
+  </script>
+</body>
+</html>
