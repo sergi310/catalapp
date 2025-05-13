@@ -6,55 +6,19 @@
   <title>Mapa d'ús del català</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
   <style>
-    html, body {
-      height: 100%;
-      margin: 0;
-      padding: 0;
+    html, body { height: 100%; margin: 0; padding: 0; }
+    #map { height: 100%; }
+    .vote-buttons button { margin: 2px; padding: 4px 8px; }
+    #legend, #zoom-warning, #add-button {
+      position: absolute; z-index: 1000; background: white; padding: 10px;
+      border-radius: 5px; box-shadow: 0 0 5px rgba(0,0,0,0.3); font-size: 14px;
     }
-    #map {
-      height: 100%;
-    }
-    .vote-buttons button {
-      margin: 2px;
-      padding: 4px 8px;
-    }
-    #legend {
-      position: absolute;
-      bottom: 10px;
-      left: 10px;
-      background: white;
-      padding: 10px;
-      font-size: 14px;
-      border-radius: 5px;
-      box-shadow: 0 0 5px rgba(0,0,0,0.3);
-      z-index: 1000;
-    }
-    #zoom-warning {
-      position: absolute;
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: #ffdddd;
-      padding: 10px;
-      font-size: 14px;
-      border: 1px solid #dd4444;
-      border-radius: 5px;
-      display: none;
-      z-index: 1000;
-    }
-    #install-button {
-      position: absolute;
-      bottom: 10px;
-      right: 10px;
-      padding: 10px;
-      background: green;
-      color: white;
-      border: none;
-      border-radius: 5px;
-      display: none;
-      z-index: 1000;
-    }
+    #legend { bottom: 10px; left: 10px; }
+    #zoom-warning { top: 10px; left: 50%; transform: translateX(-50%); background: #ffdddd; border: 1px solid #dd4444; display: none; }
+    #add-button { top: 10px; right: 10px; }
   </style>
 </head>
 <body>
@@ -66,40 +30,51 @@
     🟥 Mai
   </div>
   <div id="zoom-warning">Fes zoom més a prop per veure els establiments</div>
-  <button id="install-button">Instal·la l'app</button>
+  <div id="add-button"><button onclick="startAdding()">➕ Afegeix establiment</button></div>
 
-  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@1.35.6/dist/umd/supabase.min.js"></script>
   <script>
-    // Supabase config
-    const supabaseUrl = 'https://bwzpnsslanzyjnvhhxfc.supabase.co';
-    const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'; // la clau sencera aquí
-    const supabase = supabase.createClient(supabaseUrl, supabaseKey);
+    const SUPABASE_URL = 'https://bwzpnsslanzyjnvhhxfc.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ3enBuc3NsYW56eWpudmhoeGZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY0NTA3OTQsImV4cCI6MjA2MjAyNjc5NH0.TfnLBkYHfiMIHBZ_uiLJIaIcgNz-4iPDAoDKCp0ZViA';
 
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
     const map = L.map('map').setView([41.3851, 2.1734], 8);
     const establishments = {};
-    let userPlaceId = 0;
+    let addingMode = false;
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors'
     }).addTo(map);
 
-    map.locate({ setView: true, maxZoom: 15 });
-    map.on('locationfound', function (e) {
-      L.circleMarker(e.latlng, {
-        radius: 8,
-        color: 'blue',
-        fillColor: '#30f',
-        fillOpacity: 0.7
-      })
-        .addTo(map)
-        .bindPopup("Ets aquí")
-        .openPopup();
+    map.on('click', async (e) => {
+      if (!addingMode) return;
+
+      const name = prompt("Nom de l'establiment:");
+      if (!name) return;
+
+      const newPlace = {
+        id: crypto.randomUUID(),
+        name,
+        lat: e.latlng.lat,
+        lon: e.latlng.lng,
+        votes: []
+      };
+
+      const { error } = await supabase.from('places').insert([newPlace]);
+      if (error) {
+        alert('Error afegint establiment');
+        console.error(error);
+        return;
+      }
+
+      alert("Afegit correctament!");
+      addingMode = false;
+      loadEstablishments(); // Reload all
     });
 
-    map.on('locationerror', function () {
-      alert("No s'ha pogut obtenir la teva ubicació.");
-    });
+    function startAdding() {
+      addingMode = true;
+      alert("Fes clic al mapa per afegir un establiment");
+    }
 
     function getColorFromVotes(votes) {
       if (!votes || votes.length === 0) return 'gray';
@@ -109,113 +84,107 @@
       return 'red';
     }
 
-    function average(votes) {
-      if (!votes || votes.length === 0) return 0;
-      return votes.reduce((a, b) => a + b, 0) / votes.length;
-    }
+    async function vote(id, value) {
+      const est = establishments[id];
+      est.votes.push(value);
 
-    async function loadSharedPlaces() {
-      const { data, error } = await supabase.from('places').select('*');
+      const { error } = await supabase
+        .from('places')
+        .update({ votes: est.votes })
+        .eq('id', id);
+
       if (error) {
-        console.error('Error carregant places:', error);
+        console.error('Error saving vote:', error);
+        alert('Error guardant el vot.');
         return;
       }
-      data.forEach(place => {
-        const marker = L.circleMarker([place.lat, place.lon], {
+
+      updateMarkers();
+      alert('Gràcies pel teu vot!');
+    }
+
+    function updateMarkers() {
+      Object.values(establishments).forEach(est => {
+        const newColor = getColorFromVotes(est.votes);
+        est.marker.setStyle({ color: newColor });
+        est.marker.setPopupContent(popupContent(est));
+      });
+    }
+
+    function popupContent(est) {
+      const avg = est.votes.length ? (est.votes.reduce((a, b) => a + b, 0) / est.votes.length).toFixed(1) : '–';
+      return `
+        <b>${est.name}</b><br/>
+        <div class="vote-buttons">
+          <button onclick="vote('${est.id}', 2)">🟩 Sí</button>
+          <button onclick="vote('${est.id}', 1)">🟨 A vegades</button>
+          <button onclick="vote('${est.id}', 0)">🟥 Mai</button>
+        </div>
+        <small>Mitjana: ${avg} (${est.votes.length} vots)</small>
+      `;
+    }
+
+    async function loadEstablishments() {
+      const { data, error } = await supabase.from('places').select('*');
+      if (error) {
+        console.error('Error loading:', error);
+        return;
+      }
+
+      data.forEach(est => {
+        if (establishments[est.id]) return;
+
+        const color = getColorFromVotes(est.votes || []);
+        const marker = L.circleMarker([est.lat, est.lon], {
           radius: 6,
-          color: getColorFromVotes(place.votes),
+          color,
           fillOpacity: 0.8
         }).addTo(map);
 
-        marker.bindPopup(generatePopup(place));
+        marker.bindPopup(popupContent(est));
 
-        establishments[place.id] = {
-          ...place,
+        establishments[est.id] = {
+          ...est,
+          votes: est.votes || [],
           marker
         };
       });
     }
 
-    function generatePopup(place) {
-      return `
-        <b>${place.name}</b><br/>
-        <small>${place.votes.length} vot(s) — mitjana: ${average(place.votes).toFixed(1)}</small><br/>
-        <div class="vote-buttons">
-          <button onclick="vote('${place.id}', 2)">🟩 Sí</button>
-          <button onclick="vote('${place.id}', 1)">🟨 A vegades</button>
-          <button onclick="vote('${place.id}', 0)">🟥 Mai</button>
-        </div>
-      `;
-    }
-
-    async function saveSharedPlace(place) {
-      const { error } = await supabase.from('places').insert([place]);
-      if (error) console.error('Error desant place:', error);
-    }
-
-    async function updateVotes(id, votes) {
-      const { error } = await supabase.from('places').update({ votes }).eq('id', id);
-      if (error) console.error('Error actualitzant votacions:', error);
-    }
-
-    function addPlace(latlng, name) {
-      const id = 'user_' + (userPlaceId++);
-      const votes = [];
-      const place = { id, name, lat: latlng.lat, lon: latlng.lng, votes };
-      const marker = L.circleMarker(latlng, {
-        radius: 6,
-        color: getColorFromVotes(votes),
-        fillOpacity: 0.8
-      }).addTo(map);
-
-      marker.bindPopup(generatePopup(place));
-      place.marker = marker;
-      establishments[id] = place;
-      saveSharedPlace(place);
-    }
-
-    window.vote = function(id, value) {
-      const est = establishments[id];
-      est.votes.push(value);
-      est.marker.setStyle({ color: getColorFromVotes(est.votes) });
-      est.marker.setPopupContent(generatePopup(est));
-      updateVotes(id, est.votes);
-    }
-
-    const zoomWarning = document.getElementById('zoom-warning');
-    map.on('zoomend', () => {
-      zoomWarning.style.display = map.getZoom() < 13 ? 'block' : 'none';
+    map.locate({ setView: true, maxZoom: 15 });
+    map.on('locationfound', function (e) {
+      L.circleMarker(e.latlng, {
+        radius: 8,
+        color: 'blue',
+        fillColor: '#30f',
+        fillOpacity: 0.7
+      }).addTo(map).bindPopup("Ets aquí").openPopup();
     });
 
-    // Instal·lació PWA
-    let deferredPrompt;
-    const installButton = document.getElementById('install-button');
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      installButton.style.display = 'block';
+    map.on('locationerror', function () {
+      alert("No s'ha pogut obtenir la teva ubicació.");
     });
 
-    installButton.addEventListener('click', async () => {
-      if (deferredPrompt) {
-        deferredPrompt.prompt();
-        const result = await deferredPrompt.userChoice;
-        if (result.outcome === 'accepted') {
-          console.log('PWA instal·lada');
-        }
-        deferredPrompt = null;
-        installButton.style.display = 'none';
+    function onMapMoveEnd() {
+      const zoomWarning = document.getElementById('zoom-warning');
+      if (map.getZoom() < 13) {
+        zoomWarning.style.display = 'block';
+      } else {
+        zoomWarning.style.display = 'none';
+        loadEstablishments();
       }
-    });
+    }
 
-    loadSharedPlaces();
-  </script>
+    map.on('moveend', onMapMoveEnd);
+    onMapMoveEnd();
 
-  <script>
+    // PWA support
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js')
-        .then(() => console.log('Service Worker registrat!'))
-        .catch(err => console.error('Error al registrar el Service Worker:', err));
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('service-worker.js')
+          .then(reg => console.log('Service Worker registrat'))
+          .catch(err => console.log('Error registrant SW:', err));
+      });
     }
   </script>
 </body>
